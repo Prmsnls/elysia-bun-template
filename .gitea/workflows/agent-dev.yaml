@@ -1,0 +1,114 @@
+name: Agent Developer
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number'
+        required: true
+      mode:
+        description: 'Mode: create or fix'
+        required: true
+        default: 'create'
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "Agent Developer"
+          git config --global user.email "agent@zopu.dev"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install opencode
+        run: |
+          curl -fsSL https://opencode.ai/install.sh | bash
+          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+
+      - name: Run Developer (Create Mode)
+        if: ${{ inputs.mode == 'create' }}
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+        run: |
+          ISSUE_NUM="${{ inputs.issue_number }}"
+          BRANCH_NAME="feature/issue-${ISSUE_NUM}"
+
+          # Create and checkout branch
+          git checkout -b "${BRANCH_NAME}"
+
+          # Create the developer prompt
+          cat > /tmp/dev_prompt.md << 'EOF'
+          You are implementing the plan from issue #${ISSUE_NUM}.
+
+          ## Your Task
+          1. Read the implementation plan from issue #${ISSUE_NUM}
+          2. Implement the changes as specified
+          3. Ensure code follows the existing patterns and style
+          4. Add appropriate tests if applicable
+          5. Commit your changes with descriptive messages
+
+          ## Important
+          - Make small, focused commits
+          - Follow the existing code style
+          - Ensure the code compiles/runs without errors
+          - Do not modify unrelated files
+
+          After implementation, create a Pull Request targeting the main branch.
+          EOF
+
+          opencode --non-interactive -p "$(cat /tmp/dev_prompt.md)" \
+            --mcp-config '{"gitea": {"url": "${GITEA_URL}", "token": "${GITEA_TOKEN}"}}'
+
+          # Push the branch
+          git push -u origin "${BRANCH_NAME}"
+
+      - name: Run Developer (Fix Mode)
+        if: ${{ inputs.mode == 'fix' }}
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+        run: |
+          ISSUE_NUM="${{ inputs.issue_number }}"
+          BRANCH_NAME="feature/issue-${ISSUE_NUM}"
+
+          # Checkout existing branch
+          git fetch origin "${BRANCH_NAME}"
+          git checkout "${BRANCH_NAME}"
+
+          # Create the fix prompt
+          cat > /tmp/fix_prompt.md << 'EOF'
+          You are fixing issues mentioned in the PR review for issue #${ISSUE_NUM}.
+
+          ## Your Task
+          1. Read the review comments on the PR
+          2. Address each issue mentioned by the reviewer
+          3. Make the necessary code changes
+          4. Commit your fixes with descriptive messages
+
+          ## Important
+          - Address all reviewer feedback
+          - Do not introduce new features
+          - Keep changes focused on the review feedback
+          EOF
+
+          opencode --non-interactive -p "$(cat /tmp/fix_prompt.md)" \
+            --mcp-config '{"gitea": {"url": "${GITEA_URL}", "token": "${GITEA_TOKEN}"}}'
+
+          # Push fixes to the same branch
+          git push origin "${BRANCH_NAME}"

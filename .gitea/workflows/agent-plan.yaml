@@ -1,0 +1,67 @@
+name: Agent Plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to plan'
+        required: true
+      issue_title:
+        description: 'Issue title'
+        required: true
+      issue_body:
+        description: 'Issue body/prompt'
+        required: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "Agent Planner"
+          git config --global user.email "agent@zopu.dev"
+
+      - name: Install opencode
+        run: |
+          curl -fsSL https://opencode.ai/install.sh | bash
+          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+
+      - name: Run Planner
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+        run: |
+          # Read the issue details
+          ISSUE_NUM="${{ inputs.issue_number }}"
+          ISSUE_TITLE="${{ inputs.issue_title }}"
+          ISSUE_BODY="${{ inputs.issue_body }}"
+
+          # Create the planner prompt
+          cat > /tmp/planner_prompt.md << 'EOF'
+          You are analyzing issue #${ISSUE_NUM}: ${ISSUE_TITLE}
+
+          ## Issue Description
+          ${ISSUE_BODY}
+
+          ## Your Task
+          1. Analyze the codebase to understand the current architecture
+          2. Create a detailed implementation plan
+          3. The plan should include:
+             - Files to modify or create
+             - Step-by-step implementation approach
+             - Any potential risks or considerations
+             - Estimated complexity
+
+          ## Output Format
+          Comment your plan on issue #${ISSUE_NUM} using the Gitea API.
+          Start your comment with "## Implementation Plan" so it can be detected.
+          EOF
+
+          # Run opencode with the planner skill
+          opencode --non-interactive -p "$(cat /tmp/planner_prompt.md)" \
+            --mcp-config '{"gitea": {"url": "${GITEA_URL}", "token": "${GITEA_TOKEN}"}}'

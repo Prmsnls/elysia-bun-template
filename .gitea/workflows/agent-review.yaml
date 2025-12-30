@@ -1,0 +1,83 @@
+name: Agent Reviewer
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR branch
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+        run: |
+          PR_NUM="${{ inputs.pr_number }}"
+          # Fetch the PR ref
+          git fetch origin "refs/pull/${PR_NUM}/head:pr-${PR_NUM}"
+          git checkout "pr-${PR_NUM}"
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "Agent Reviewer"
+          git config --global user.email "agent@zopu.dev"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install opencode
+        run: |
+          curl -fsSL https://opencode.ai/install.sh | bash
+          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+
+      - name: Run Reviewer
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+        run: |
+          PR_NUM="${{ inputs.pr_number }}"
+
+          # Get the diff
+          git diff origin/main...HEAD > /tmp/pr_diff.txt
+
+          # Create the reviewer prompt
+          cat > /tmp/review_prompt.md << 'EOF'
+          You are reviewing PR #${PR_NUM}.
+
+          ## The Diff
+          $(cat /tmp/pr_diff.txt)
+
+          ## Your Task
+          1. Review the code changes thoroughly
+          2. Check for:
+             - Code correctness and logic errors
+             - Security vulnerabilities
+             - Performance issues
+             - Code style and best practices
+             - Missing error handling
+             - Test coverage (if applicable)
+          3. Provide constructive feedback
+
+          ## Output Format
+          Comment your review on PR #${PR_NUM} using the Gitea API.
+          Be specific about any issues found and suggest improvements.
+          If the code looks good, approve it with a positive comment.
+          EOF
+
+          opencode --non-interactive -p "$(cat /tmp/review_prompt.md)" \
+            --mcp-config '{"gitea": {"url": "${GITEA_URL}", "token": "${GITEA_TOKEN}"}}'
