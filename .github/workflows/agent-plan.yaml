@@ -4,64 +4,160 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: 'Issue number to plan'
+        description: "Issue number to analyze"
         required: true
-      issue_title:
-        description: 'Issue title'
+        type: number
+      repo_owner:
+        description: "Repository owner"
         required: true
-      issue_body:
-        description: 'Issue body/prompt'
+        type: string
+      repo_name:
+        description: "Repository name"
         required: true
+        type: string
+      workflow_id:
+        description: "Convex Workflow ID (for future use)"
+        required: false
+        default: ""
+        type: string
+
+env:
+  GITEA_URL: ${{ secrets.GITEA_URL }}
+  GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+  OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: zopu-planner
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure Git
+      - name: Verify Environment
         run: |
-          git config --global user.name "Agent Planner"
-          git config --global user.email "agent@zopu.dev"
+          set -euo pipefail
+          echo "=== ENVIRONMENT CHECK ==="
+          echo "Checking installed tools..."
+          echo -n "bun: " && (which bun && bun --version || echo "NOT FOUND")
+          echo -n "opencode: " && (which opencode && opencode --version || echo "NOT FOUND")
+          echo -n "tea: " && (which tea && tea --version || echo "NOT FOUND")
+          echo -n "go: " && (which go && go version || echo "NOT FOUND")
+          echo -n "uv: " && (which uv && uv --version || echo "NOT FOUND")
+          echo -n "jq: " && (which jq && jq --version || echo "NOT FOUND")
+          echo ""
+          echo "Checking OpenCode config..."
+          ls -la /root/.config/opencode/ 2>/dev/null || echo "No global config found"
+          echo "Commands:"
+          ls -la /root/.config/opencode/command/ 2>/dev/null || echo "No global commands found"
+          echo "Skills:"
+          ls -la /root/.config/opencode/skill/ 2>/dev/null || echo "No global skills found"
+          echo "Local config:"
+          ls -la .opencode/ 2>/dev/null || echo "No local config found"
 
-      - name: Install opencode
+      - name: Configure tea CLI
         run: |
-          curl -fsSL https://opencode.ai/install.sh | bash
-          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+          set -euo pipefail
+          echo "=== CONFIGURING TEA CLI ==="
+          if [ -z "$GITEA_URL" ] || [ -z "$GITEA_TOKEN" ]; then
+            echo "Error: GITEA_URL and GITEA_TOKEN secrets must be set"
+            exit 1
+          fi
+          tea login add --name "gitea" --url "$GITEA_URL" --token "$GITEA_TOKEN"
+          tea login default gitea
+          echo "Tea CLI configured successfully"
+          tea whoami
 
-      - name: Run Planner
+      - name: Run OpenCode Planner
+        id: planner
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REPO_OWNER: ${{ inputs.repo_owner }}
+          REPO_NAME: ${{ inputs.repo_name }}
+        run: |
+          set -euo pipefail
+          echo "=== RUNNING OPENCODE PLANNER ==="
+          echo "Issue: #$ISSUE_NUMBER"
+          echo "Repository: $REPO_OWNER/$REPO_NAME"
+          echo "---"
+
+          # Run OpenCode with the /plan command
+          # The command fetches issue details and comments via tea CLI
+          echo "Invoking OpenCode /plan command..."
+          set +e
+          opencode run --agent plan --command plan "$ISSUE_NUMBER" "$REPO_OWNER" "$REPO_NAME" 2>&1 | tee /tmp/opencode_output.txt
+          OPENCODE_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "---"
+          echo "OpenCode execution complete (exit code: $OPENCODE_EXIT)"
+
+          # Save the full output as the plan
+          cat /tmp/opencode_output.txt > /tmp/plan.md
+          echo "=== GENERATED PLAN ==="
+          cat /tmp/plan.md
+
+          {
+            echo "plan<<PLAN_EOF"
+            cat /tmp/plan.md
+            echo "PLAN_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post Plan to Issue
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REPO_OWNER: ${{ inputs.repo_owner }}
+          REPO_NAME: ${{ inputs.repo_name }}
+          PLAN_CONTENT: ${{ steps.planner.outputs.plan }}
           GITEA_URL: ${{ secrets.GITEA_URL }}
         run: |
-          # Read the issue details
-          ISSUE_NUM="${{ inputs.issue_number }}"
-          ISSUE_TITLE="${{ inputs.issue_title }}"
-          ISSUE_BODY="${{ inputs.issue_body }}"
+          set -euo pipefail
+          echo "=== POSTING PLAN TO ISSUE ==="
 
-          # Create the planner prompt
-          cat > /tmp/planner_prompt.md << 'EOF'
-          You are analyzing issue #${ISSUE_NUM}: ${ISSUE_TITLE}
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-          ## Issue Description
-          ${ISSUE_BODY}
+          cat > /tmp/comment.md << COMMENT_EOF
+          $PLAN_CONTENT
 
-          ## Your Task
-          1. Analyze the codebase to understand the current architecture
-          2. Create a detailed implementation plan
-          3. The plan should include:
-             - Files to modify or create
-             - Step-by-step implementation approach
-             - Any potential risks or considerations
-             - Estimated complexity
+          ---
 
-          ## Output Format
-          Comment your plan on issue #${ISSUE_NUM} using the Gitea API.
-          Start your comment with "## Implementation Plan" so it can be detected.
-          EOF
+          **Review this plan and take action:**
 
-          # Run opencode with the planner skill
-          opencode --non-interactive -p "$(cat /tmp/planner_prompt.md)" \
-            --mcp-config '{"gitea": {"url": "${GITEA_URL}", "token": "${GITEA_TOKEN}"}}'
+          | Action | How |
+          |--------|-----|
+          | ✅ Approve | React with 👍 or comment \`/approve\` |
+          | 📝 Request Changes | Comment with your feedback |
+          | ❌ Cancel | Close this issue |
+
+          *Generated by Planner Agent - $TIMESTAMP*
+          COMMENT_EOF
+
+          COMMENT=$(cat /tmp/comment.md)
+          tea comment "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" "$COMMENT"
+          echo "Plan posted to issue #$ISSUE_NUMBER"
+          echo "View at: $GITEA_URL/$REPO_OWNER/$REPO_NAME/issues/$ISSUE_NUMBER"
+
+      - name: Callback to Convex
+        if: inputs.workflow_id != ''
+        env:
+          CONVEX_URL: ${{ secrets.CONVEX_URL }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+          PLAN_CONTENT: ${{ steps.planner.outputs.plan }}
+        run: |
+          set -euo pipefail
+          echo "=== CONVEX CALLBACK ==="
+          if [ -z "$CONVEX_URL" ]; then
+            echo "CONVEX_URL not set, skipping callback"
+            exit 0
+          fi
+          echo "Sending event to Convex..."
+          # Encode plan as JSON string for the payload
+          PLAN_ESCAPED=$(echo "$PLAN_CONTENT" | jq -Rs .)
+          curl -X POST "$CONVEX_URL/api/events/plan_ready" \
+            -H "Content-Type: application/json" \
+            -d "{\"workflowId\": \"$WORKFLOW_ID\", \"event\": \"plan_ready\", \"plan\": $PLAN_ESCAPED}"
+
+      - name: Summary
+        run: |
+          echo "=== WORKFLOW COMPLETE ==="
+          echo "Issue: #${{ inputs.issue_number }}"
+          echo "Repository: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}"
+          echo "Plan generated and posted to issue"
