@@ -24,6 +24,7 @@ on:
 env:
   GITEA_URL: ${{ secrets.GITEA_URL }}
   GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+  # OpenCode Zen API key
   OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
 jobs:
@@ -46,11 +47,12 @@ jobs:
           echo -n "jq: " && (which jq && jq --version || echo "NOT FOUND")
           echo ""
           echo "Checking OpenCode config..."
-          ls -la /root/.config/opencode/ 2>/dev/null || echo "No global config found"
+          echo "listing ~/.config/opencode/..."
+          ls -la ~/.config/opencode/ 2>/dev/null || echo "No global config found"
           echo "Commands:"
-          ls -la /root/.config/opencode/command/ 2>/dev/null || echo "No global commands found"
+          ls -la ~/.config/opencode/command/ 2>/dev/null || echo "No global commands found"
           echo "Skills:"
-          ls -la /root/.config/opencode/skill/ 2>/dev/null || echo "No global skills found"
+          ls -la ~/.config/opencode/skill/ 2>/dev/null || echo "No global skills found"
           echo "Local config:"
           ls -la .opencode/ 2>/dev/null || echo "No local config found"
 
